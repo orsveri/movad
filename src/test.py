@@ -1,5 +1,6 @@
 import datetime
 import torch
+import pandas as pd
 import numpy as np
 import pickle
 
@@ -101,3 +102,57 @@ def test(cfg, model, testdata_loader, epoch,
             'info': info_all,
             'frames_counter': frames_counter,
         }, f)
+
+
+def test_filenames_csv(cfg, model, testdata_loader, epoch,
+         filename):
+
+    targets_all = []
+    logits = []
+    clip_names_all = []
+    timesteps_all = []
+    ttc_all = []
+
+    rnn_type = cfg.get('rnn_type', 'lstm')
+    rnn_cell_num = cfg.get('rnn_cell_num', 1)
+
+    fb = cfg.NF
+    model.eval()
+    for j, (video_data, data_info, timesteps, labels) in tqdm(
+            enumerate(testdata_loader), total=len(testdata_loader),
+            desc='Epoch: %d / %d' % (epoch, cfg.epochs)):
+        clip_name = testdata_loader.dataset.keys[int(data_info[0, 1].item())]
+        video_data = video_data.to(cfg.device, non_blocking=True)
+
+        # [B, F, C, W, H] -> [B, C, F, W, H]
+        video_data = torch.swapaxes(video_data, 1, 2)
+        rnn_state = None
+        if rnn_type == 'gru':
+            rnn_state = torch.randn(
+                rnn_cell_num, 1, cfg.rnn_state_size).to(cfg.device)
+
+        # FIXME start from zero!
+        for i in range(fb, video_data.shape[2]):
+            x = video_data[:, :, i-fb:i]
+
+            output, rnn_state = model(x, rnn_state)
+
+            targets_all.append(labels[0, i-1].item())
+            logits.append(output[0].detach().cpu().numpy())
+            timesteps_all.append(timesteps[0, i-1].item())
+            clip_names_all.append(clip_name)
+            ttc_all.append(data_info[0, 11].item())
+
+    print('save file {}'.format(filename))
+
+    logits = np.array(logits)
+
+    df = pd.DataFrame({
+        "clip": clip_names_all,
+        "filename": timesteps_all,
+        "logits_safe": logits[:, 0],
+        "logits_risk": logits[:, 1],
+        "label": targets_all,
+        "ttc": ttc_all  # TODO
+    })
+    df.to_csv(filename, index=True, header=True)

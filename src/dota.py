@@ -1,8 +1,11 @@
+import io
 import os
 import json
 import numpy as np
 import torch
 import platform
+import zipfile
+from natsort import natsorted
 
 from random import randint
 from copy import deepcopy
@@ -90,9 +93,11 @@ class Dota(Dataset):
 
         self.get_data_list()
 
+        print("DoTA initialized!")
+
     def get_data_list(self):
         list_file = os.path.join(
-            self.root_path, 'metadata', 'metadata_{}.json'.format(self.phase))
+            self.root_path, 'dataset', 'metadata_{}.json'.format(self.phase))
         assert os.path.exists(list_file), \
             "File does not exist! %s" % (list_file)
         with open(list_file, 'r') as f:
@@ -116,9 +121,12 @@ class Dota(Dataset):
         for index in range(len(self.metadata)):
             ann = self.annotations[index]
             video_file = self.keys[index]
-            frames_dir = os.path.join(
-                self.root_path, 'frames', video_file, 'images')
-            count_files = len(os.listdir(frames_dir))
+            frames_zip = os.path.join(
+                self.root_path, 'frames', video_file, 'images.zip')
+            with zipfile.ZipFile(frames_zip, 'r') as zipf:
+                image_names = zipf.namelist()
+            image_names = [f for f in image_names if f.lower().endswith('.jpg')]
+            count_files = len(image_names)
             count_ann = len(ann['labels'])
             count_meta = self.metadata[video_file]['num_frames']
             if count_ann != count_files or count_files != count_meta \
@@ -131,7 +139,7 @@ class Dota(Dataset):
 
     def _load_ann(self, key):
         ann_file = os.path.join(
-            self.root_path, 'annotations', '{}.json'.format(key))
+            self.root_path, 'dataset', 'annotations', '{}.json'.format(key))
         with open(ann_file, 'r') as f:
             ann = json.load(f)
         return ann
@@ -166,26 +174,38 @@ class Dota(Dataset):
         video_file = self.keys[index]
         label = sub_batch.label
 
-        frames_dir = os.path.join(
-            self.root_path, 'frames', video_file, 'images')
-        frames = []
-        names = []
-        frames = sorted(os.listdir(frames_dir))
-        for index, name in enumerate(frames[sub_batch.begin:sub_batch.end]):
-            # filter accident frames if it is a negative example
-            if label == 1 or index < sub_batch.a_start or \
-                    index > sub_batch.a_end:
-                path = os.path.join(frames_dir, name)
-                names.append(path)
-        frames = np.array(list(map(read_file, names)))
-        video_len_orig = len(frames)
-        frames = self._add_video_filler(frames)
-        return frames.astype('float32'), video_len_orig
+        frames_zip = os.path.join(
+            self.root_path, 'frames', video_file, 'images.zip')
+        images = []
+        with zipfile.ZipFile(frames_zip, 'r') as zipf:
+            frames = zipf.namelist()
+            frames = natsorted([f for f in frames if f.lower().endswith('.jpg')])
+            for index, name in enumerate(frames[sub_batch.begin:sub_batch.end]):
+                # filter accident frames if it is a negative example
+                if label == 1 or index < sub_batch.a_start or \
+                        index > sub_batch.a_end:
+                    with zipf.open(name) as file:
+                        img = Image.open(io.BytesIO(file.read()))  # Convert bytes to a PIL Image
+                        images.append(np.asarray(img))  # Convert to a numpy array
+            images = np.array(images)
+        video_len_orig = len(images)
+        images = self._add_video_filler(images)
+        return images.astype('float32'), video_len_orig
 
     def gather_info(self, index, sub_batch, video_len_orig):
         ann = self.annotations[index]
         label = sub_batch.label
-        return np.array([
+
+        clip_name = ann['video_name']
+        with open(os.path.join(self.root_path, 'dataset', 'annotations', f'{clip_name}.json')) as f:
+            frme_lvl_anno = json.load(f)
+            # sort is not required since we read already sorted timesteps from annotations
+            timesteps = natsorted(
+                [int(os.path.splitext(os.path.basename(frame_label["image_path"]))[0]) for frame_label
+                 in frme_lvl_anno["labels"]])
+            frame_level_labels = [1 if int(frame_label["accident_id"]) > 0 else 0 for frame_label in frme_lvl_anno["labels"]]
+
+        info = np.array([
             video_len_orig,
             self.keys.index(ann['video_name']),
             sub_batch.a_start,
@@ -199,14 +219,15 @@ class Dota(Dataset):
             int(ann['night']),
             int(has_objects(ann)),
         ]).astype('float')
+        return info, np.array(timesteps).astype(int), np.array(frame_level_labels).astype(int)
 
     def __getitem__(self, index):
         # init sub_batch
         sub_batch = AnomalySubBatch(self, index)
         # read RGB video (trimmed)
         video_data, video_len_orig = self.read_video(index, sub_batch)
-        # gather info
-        data_info = self.gather_info(index, sub_batch, video_len_orig)
+        # gather info AND frame-level targets (because we can have multiple anomaly ranges in one video)
+        data_info, timesteps, targets = self.gather_info(index, sub_batch, video_len_orig)
 
         # pre-process
         if self.transforms['image'] is not None:
@@ -218,7 +239,7 @@ class Dota(Dataset):
         if hasattr(self, 'vflipper'):
             _, video_data = self.vflipper(video_data)
 
-        return video_data, data_info
+        return video_data, data_info, timesteps, targets
 
 
 def setup_dota(Dota, cfg, num_workers=-1,
@@ -286,7 +307,7 @@ def setup_dota(Dota, cfg, num_workers=-1,
         print("# train set: {}".format(len(train_data)))
         cfg.update(FPS=train_data.fps)
     else:
-        if phase == 'test':
+        if phase in ('test', 'test_csv'):
             # validation dataset
             test_data = Dota(cfg.data_path, 'val', transforms=transform_dict)
             testdata_loader = DataLoader(

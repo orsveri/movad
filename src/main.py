@@ -13,7 +13,7 @@ from metrics import evaluation, print_results
 from models import build_cls, build_model_cfg
 from optim import build_optimizer
 from play import play
-from test import test
+from test import test, test_filenames_csv
 from train import train
 
 
@@ -36,7 +36,7 @@ def parse_configs():
                         help='Configuration file.')
     parser.add_argument('--phase',
                         default='train',
-                        choices=['train', 'test', 'play'],
+                        choices=['train', 'test', 'play', 'test_csv'],
                         help='Training or testing or play phase.')
     help_num_workers = 'The number of workers to load dataset. Default: 0'
     parser.add_argument('--num_workers',
@@ -158,6 +158,18 @@ if __name__ == "__main__":
         teas = content['teas']
 
         print_results(cfg, *evaluation(FPS=cfg.FPS, **content))
+
+    elif cfg.phase == 'test_csv':
+        filename = os.path.join(cfg.output, f'eval_DoTA_ckpt{epoch}', "predictions.csv")
+        os.makedirs(os.path.dirname(filename))
+        if not os.path.exists(filename):
+            if cfg.get('_no_checkpoint', False):
+                # in case you don't have a checkpoint to test
+                raise Exception('no checkpoint to test')
+            with torch.no_grad():
+                test_filenames_csv(cfg, model, testdata_loader, epoch, filename)
+
+        print("Done!")
 
     elif cfg.phase == 'play':
         play(cfg, testdata_loader)
