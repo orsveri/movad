@@ -16,6 +16,7 @@ from pytorchvideo import transforms as T
 
 from torch.utils.data import DataLoader
 from data_transform import pad_frames, RandomVerticalFlip, RandomHorizontalFlip
+from orsveri_src.data_utils import smooth_labels, compute_time_vector
 
 
 anomalies = [
@@ -78,12 +79,15 @@ class Dota(Dataset):
             self, root_path, phase,
             transforms={'image': None},
             VCL=None,
-            vertical_flip_prob=0., horizontal_flip_prob=0.):
+            vertical_flip_prob=0., horizontal_flip_prob=0.,
+            split_file=None):
         self.root_path = root_path
         self.phase = phase  # 'train', 'test', 'play'
         self.transforms = transforms
         self.fps = 10
         self.VCL = VCL
+        self.ttc_TT = 2.
+        self.ttc_TA = 1.
 
         if vertical_flip_prob > 0.:
             self.vflipper = RandomVerticalFlip(vertical_flip_prob)
@@ -91,17 +95,29 @@ class Dota(Dataset):
         if horizontal_flip_prob > 0.:
             self.hflipper = RandomHorizontalFlip(horizontal_flip_prob)
 
-        self.get_data_list()
+        self.metadata = None
+        self.get_data_list(split_file)
 
         print("DoTA initialized!")
 
-    def get_data_list(self):
+    def get_data_list(self, split_file=None):
         list_file = os.path.join(
             self.root_path, 'dataset', 'metadata_{}.json'.format(self.phase))
         assert os.path.exists(list_file), \
             "File does not exist! %s" % (list_file)
         with open(list_file, 'r') as f:
-            self.metadata = json.load(f)
+            metadata = json.load(f)
+
+        # Can use separate split list is it doesn't conflict with original train-val split
+        if split_file is None:
+            self.metadata = metadata
+        else:
+            with open(split_file, 'r') as file:
+                clip_names = [line.rstrip() for line in file]
+            requested_metadata = {clip: metadata[clip] for clip in clip_names if clip in metadata}
+            diff = set(clip_names) - set(metadata.keys())
+            assert len(requested_metadata) == len(clip_names), f"Cannot find some of the requested clips! {diff}"
+            self.metadata = requested_metadata
 
         # load annotations
         self._load_anns()
@@ -204,6 +220,8 @@ class Dota(Dataset):
                 [int(os.path.splitext(os.path.basename(frame_label["image_path"]))[0]) for frame_label
                  in frme_lvl_anno["labels"]])
             frame_level_labels = [1 if int(frame_label["accident_id"]) > 0 else 0 for frame_label in frme_lvl_anno["labels"]]
+        stepslabels = np.stack([np.array(timesteps).astype(int), np.array(frame_level_labels).astype(int)], axis=-1)
+        ttc = compute_time_vector(frame_level_labels, fps=self.fps, TT=self.ttc_TT, TA=self.ttc_TA)
 
         info = np.array([
             video_len_orig,
@@ -217,9 +235,9 @@ class Dota(Dataset):
             ann['accident_id'],
             int(ann['ego_involve']),
             int(ann['night']),
-            int(has_objects(ann)),
+            int(has_objects(ann))
         ]).astype('float')
-        return info, np.array(timesteps).astype(int), np.array(frame_level_labels).astype(int)
+        return info, stepslabels, ttc
 
     def __getitem__(self, index):
         # init sub_batch
@@ -227,7 +245,7 @@ class Dota(Dataset):
         # read RGB video (trimmed)
         video_data, video_len_orig = self.read_video(index, sub_batch)
         # gather info AND frame-level targets (because we can have multiple anomaly ranges in one video)
-        data_info, timesteps, targets = self.gather_info(index, sub_batch, video_len_orig)
+        data_info, timesteps_targets, ttcs = self.gather_info(index, sub_batch, video_len_orig)
 
         # pre-process
         if self.transforms['image'] is not None:
@@ -239,11 +257,11 @@ class Dota(Dataset):
         if hasattr(self, 'vflipper'):
             _, video_data = self.vflipper(video_data)
 
-        return video_data, data_info, timesteps, targets
+        return video_data, data_info, timesteps_targets, ttcs
 
 
 def setup_dota(Dota, cfg, num_workers=-1,
-               VCL=None, phase=None):
+               VCL=None, phase=None, split_file=None):
     mean = cfg.get('data_mean', [0.218, 0.220, 0.209])
     std = cfg.get('data_std', [0.277, 0.280, 0.277])
     params = {
@@ -299,7 +317,8 @@ def setup_dota(Dota, cfg, num_workers=-1,
             transforms=transform_dict_train,
             VCL=VCL,
             vertical_flip_prob=vertical_flip_prob,
-            horizontal_flip_prob=horizontal_flip_prob)
+            horizontal_flip_prob=horizontal_flip_prob,
+            split_file=split_file)
         traindata_loader = DataLoader(
             dataset=train_data, batch_size=cfg.batch_size,
             shuffle=True, drop_last=True, num_workers=num_workers,
@@ -309,7 +328,7 @@ def setup_dota(Dota, cfg, num_workers=-1,
     else:
         if phase in ('test', 'test_csv'):
             # validation dataset
-            test_data = Dota(cfg.data_path, 'val', transforms=transform_dict)
+            test_data = Dota(cfg.data_path, 'val', transforms=transform_dict, split_file=split_file)
             testdata_loader = DataLoader(
                 dataset=test_data, batch_size=1, shuffle=False,
                 drop_last=True, num_workers=num_workers,
@@ -319,7 +338,8 @@ def setup_dota(Dota, cfg, num_workers=-1,
             # validation dataset
             test_data = Dota(
                 cfg.data_path, 'val',
-                transforms=transform_dict_to_play)
+                transforms=transform_dict_to_play,
+                split_file=split_file)
             testdata_loader = DataLoader(
                 dataset=test_data, batch_size=1, shuffle=False,
                 drop_last=True, num_workers=num_workers,

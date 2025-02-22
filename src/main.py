@@ -80,6 +80,9 @@ def parse_configs():
                         '-mr',
                         action='store_true',
                         default=False)
+    parser.add_argument('--split_file',
+                        default=None,
+                        help='File containing the list of clip names to use, should not conflict with the original train-val split')
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
@@ -100,9 +103,11 @@ if __name__ == "__main__":
     set_deterministic(cfg.seed)
 
     traindata_loader, testdata_loader = setup_dota(
-            Dota, cfg, num_workers=cfg.num_workers,
-            VCL=cfg.get('VCL', None),
-            phase=cfg.phase)
+        Dota, cfg, num_workers=cfg.num_workers,
+        VCL=cfg.get('VCL', None),
+        phase=cfg.phase,
+        split_file=cfg.split_file
+    )
 
     checkpoint = None
     epoch = 0
@@ -173,3 +178,7 @@ if __name__ == "__main__":
 
     elif cfg.phase == 'play':
         play(cfg, testdata_loader)
+
+# --config cfgs/v4_2.yml --output output/v4_2/ --phase test_csv --epoch 690 --split_file /mnt/experiments/sorlova/datasets/DoTA_refined/dataset/val_split.txt
+
+
