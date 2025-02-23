@@ -24,6 +24,18 @@ class BasicSequencer_Abs:
         raise NotImplementedError
 
 
+class FullSequencer:
+    def __init__(self, seq_frequency: int, input_frequency: int):
+        assert seq_frequency > 0, "Sequence frequency must be non-zero and positive!"
+        self.seq_frequency = seq_frequency
+        self.input_frequency = input_frequency
+        self.step = int(input_frequency / seq_frequency)
+
+    def get_sequences(self, timesteps_nb: int, input_frequency: Optional[int] = None) -> Sequence[Sequence[int]]:
+        full_sequence = list(range(timesteps_nb-1, -1, -self.step))[::-1]
+        return [full_sequence]
+
+
 class BasicLabeledSequencer_Abs(BasicSequencer_Abs):
     def get_sequences(self, labels: Sequence, input_frequency: int) -> Sequence[Sequence[int]]:
         raise NotImplementedError
@@ -165,3 +177,4 @@ class RegularSequencerWithStart(BasicSequencer_Abs):
             assert len(new_seq) == self.seq_length
             sequences.append(new_seq)
         return sequences
+

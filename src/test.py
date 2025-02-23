@@ -121,7 +121,12 @@ def test_filenames_csv(cfg, model, testdata_loader, epoch,
     for j, (video_data, data_info, timesteps_labels, ttcs) in tqdm(
             enumerate(testdata_loader), total=len(testdata_loader),
             desc='Epoch: %d / %d' % (epoch, cfg.epochs)):
-        clip_name = testdata_loader.dataset.keys[int(data_info[0, 1].item())]
+        # DoTA
+        #clip_name = testdata_loader.dataset.keys[int(data_info[0, 1].item())]
+        # DADA
+        clip_id, frame_seq = testdata_loader.dataset.dataset_samples[int(data_info[0, 1].item())]
+        clip_name = testdata_loader.dataset.clip_names[clip_id]
+
         video_data = video_data.to(cfg.device, non_blocking=True)
 
         # [B, F, C, W, H] -> [B, C, F, W, H]

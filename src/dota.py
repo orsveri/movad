@@ -203,7 +203,7 @@ class Dota(Dataset):
                     with zipf.open(name) as file:
                         img = Image.open(io.BytesIO(file.read()))  # Convert bytes to a PIL Image
                         images.append(np.asarray(img))  # Convert to a numpy array
-            images = np.array(images)
+        images = np.array(images)
         video_len_orig = len(images)
         images = self._add_video_filler(images)
         return images.astype('float32'), video_len_orig

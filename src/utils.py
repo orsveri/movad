@@ -51,6 +51,14 @@ def load_checkpoint(cfg):
     return torch.load(path, map_location=cfg.device)
 
 
+def load_checkpoint_path(cfg, ckpt_path):
+    # load checkpoint
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError()
+    print('load file {}'.format(ckpt_path))
+    return torch.load(ckpt_path, map_location=cfg.device)
+
+
 def load_pretrained(model, cfg):
     pretrained = cfg.get('pretrained', None)
     if pretrained is not None:

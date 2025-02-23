@@ -9,6 +9,7 @@ import utils
 from easydict import EasyDict
 
 from dota import setup_dota, Dota
+from dada import setup_dada, Dada
 from metrics import evaluation, print_results
 from models import build_cls, build_model_cfg
 from optim import build_optimizer
@@ -99,15 +100,27 @@ if __name__ == "__main__":
     # parse input arguments
     cfg = parse_configs()
 
+    with open(cfg.config, 'r') as file:
+        yamlcfg = yaml.safe_load(file)
+    dataset_name = yamlcfg["dataset"]
+
     # fix random seed
     set_deterministic(cfg.seed)
 
-    traindata_loader, testdata_loader = setup_dota(
-        Dota, cfg, num_workers=cfg.num_workers,
-        VCL=cfg.get('VCL', None),
-        phase=cfg.phase,
-        split_file=cfg.split_file
-    )
+    if dataset_name == "Dota":
+        traindata_loader, testdata_loader = setup_dota(
+            Dota, cfg, num_workers=cfg.num_workers,
+            VCL=cfg.get('VCL', None),
+            phase=cfg.phase,
+            split_file=cfg.split_file
+        )
+    elif dataset_name == "Dada":
+        traindata_loader, testdata_loader = setup_dada(
+            Dada, cfg, num_workers=cfg.num_workers,
+            VCL=cfg.get('VCL', None),
+            phase=cfg.phase,
+            split_file=cfg.split_file
+        )
 
     checkpoint = None
     epoch = 0
@@ -121,11 +134,12 @@ if __name__ == "__main__":
         )
 
         try:
-            checkpoint = utils.load_checkpoint(cfg)
+            checkpoint = utils.load_checkpoint_path(cfg, "/home/sorlova/repos/NewStart/movad/output/v4_2/checkpoints/model-690.pt")
             if cfg.phase != 'play':
                 model.load_state_dict(checkpoint['model_state_dict'])
 
             epoch = checkpoint['epoch'] + 1
+            print("Found checkpoint, loaded. Epoch: ", epoch)
         except FileNotFoundError:
             print('no checkpoint found')
             # save info about no checkpoint has been loaded
@@ -133,6 +147,7 @@ if __name__ == "__main__":
             if cfg.epoch != -1:
                 epoch = cfg.epoch
             # load pretrained if available
+            print("No checkpoint, load pretrained Swin")
             utils.load_pretrained(model, cfg)
 
     if cfg.phase == 'train':
@@ -143,7 +158,9 @@ if __name__ == "__main__":
             index_guess = checkpoint.get('index_guess', 0)
             index_loss = checkpoint.get('index_loss', 0)
         train(cfg, model, traindata_loader,
-              optimizer, lr_scheduler, epoch, index_guess, index_loss)
+              optimizer, lr_scheduler, epoch, index_guess, index_loss,
+              special_dir_ckpt=os.path.join("/mnt/adas7tb/sorlova/movad_logs", os.path.basename(cfg.output))
+              )
 
     elif cfg.phase == 'test':
         filename = utils.get_result_filename(cfg, epoch)
@@ -165,7 +182,7 @@ if __name__ == "__main__":
         print_results(cfg, *evaluation(FPS=cfg.FPS, **content))
 
     elif cfg.phase == 'test_csv':
-        filename = os.path.join(cfg.output, f'eval_DoTA_ckpt{epoch}', "predictions.csv")
+        filename = os.path.join(cfg.output, f'eval_{dataset_name}_ckpt{epoch}', "predictions.csv")
         os.makedirs(os.path.dirname(filename))
         if not os.path.exists(filename):
             if cfg.get('_no_checkpoint', False):
@@ -179,6 +196,10 @@ if __name__ == "__main__":
     elif cfg.phase == 'play':
         play(cfg, testdata_loader)
 
+# eval DoTA
 # --config cfgs/v4_2.yml --output output/v4_2/ --phase test_csv --epoch 690 --split_file /mnt/experiments/sorlova/datasets/DoTA_refined/dataset/val_split.txt
-
+# eval DADA
+# --config cfgs/v4_2_dada.yml --output output/v4_2/ --phase test_csv --epoch 690
+# train DADA
+# --config cfgs/v4_2_dada.yml --output output/ft_dada/ --phase train --num_workers 2 --snapshot_interval 1
 
